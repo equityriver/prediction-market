@@ -22,8 +22,8 @@ export async function cancelOrderAction(rawOrderId: string) {
   if (!auth?.clob) {
     return { error: TRADING_AUTH_REQUIRED_ERROR }
   }
-  if (!user.proxy_wallet_address) {
-    return { error: 'Deploy your proxy wallet before trading.' }
+  if (!user.deposit_wallet_address) {
+    return { error: 'Set up your Deposit Wallet before trading.' }
   }
 
   const parsed = CancelOrderSchema.safeParse({ orderId: rawOrderId })

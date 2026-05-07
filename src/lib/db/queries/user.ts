@@ -1,4 +1,4 @@
-import type { MarketOrderType, ProxyWalletStatus, User } from '@/types'
+import type { DepositWalletStatus, MarketOrderType, User } from '@/types'
 import { asc, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm'
 import { headers } from 'next/headers'
 import { auth } from '@/lib/auth'
@@ -8,20 +8,20 @@ import { affiliate_referrals } from '@/lib/db/schema/affiliates/tables'
 import { accounts, sessions, two_factors, users, verifications, wallets } from '@/lib/db/schema/auth/tables'
 import { orders } from '@/lib/db/schema/orders/tables'
 import { runQuery } from '@/lib/db/utils/run-query'
+import { isDepositWalletDeployed } from '@/lib/deposit-wallet'
 import { db } from '@/lib/drizzle'
-import { getSafeProxyWalletAddress, isProxyWalletDeployed } from '@/lib/safe-proxy'
 import { getPublicAssetUrl } from '@/lib/storage'
 import { sanitizeTradingAuthSettings } from '@/lib/trading-auth/utils'
 import { normalizeAddress } from '@/lib/wallet'
 
 export const UserRepository = {
-  async getProfileByUsernameOrProxyAddress(username: string) {
+  async getProfileByUsernameOrDepositWalletAddress(username: string) {
     return await runQuery(async () => {
       const normalizedUsername = username.toLowerCase()
       const result = await db
         .select({
           id: users.id,
-          proxy_wallet_address: users.proxy_wallet_address,
+          deposit_wallet_address: users.deposit_wallet_address,
           username: users.username,
           image: users.image,
           created_at: users.created_at,
@@ -29,7 +29,7 @@ export const UserRepository = {
         .from(users)
         .where(or(
           eq(sql`LOWER(${users.username})`, normalizedUsername),
-          eq(sql`LOWER(${users.proxy_wallet_address})`, normalizedUsername),
+          eq(sql`LOWER(${users.deposit_wallet_address})`, normalizedUsername),
         ))
         .limit(1)
 
@@ -41,7 +41,7 @@ export const UserRepository = {
 
       const data = {
         id: rawData.id,
-        proxy_wallet_address: rawData.proxy_wallet_address,
+        deposit_wallet_address: rawData.deposit_wallet_address,
         username: rawData.username!,
         image: rawData.image ? getPublicAssetUrl(rawData.image) : '',
         created_at: rawData.created_at,
@@ -69,11 +69,13 @@ export const UserRepository = {
         return { data: data!, error: null }
       }
       catch (error: any) {
-        if (error.cause?.toString().includes('idx_users_email')) {
+        const cause = error.cause?.toString() ?? error.toString()
+
+        if (cause.includes('idx_users_email') || cause.includes('users_email_unique')) {
           return { data: null, error: 'Email is already taken.' }
         }
 
-        if (error.cause?.toString().includes('idx_users_username')) {
+        if (cause.includes('idx_users_username') || cause.includes('users_username_unique')) {
           return { data: null, error: 'Username is already taken.' }
         }
 
@@ -230,7 +232,7 @@ export const UserRepository = {
         }
       }
 
-      const proxyAddress = await ensureUserProxyWallet(user)
+      const proxyAddress = await ensureUserDepositWallet(user)
 
       if (proxyAddress && !user.username) {
         const generatedUsername = generateUsername(proxyAddress)
@@ -300,7 +302,7 @@ export const UserRepository = {
                 usernameCondition,
                 ilike(users.email, `%${sanitizedSearchTerm}%`),
                 ilike(users.address, `%${sanitizedSearchTerm}%`),
-                ilike(users.proxy_wallet_address, `%${sanitizedSearchTerm}%`),
+                ilike(users.deposit_wallet_address, `%${sanitizedSearchTerm}%`),
               )
         }
       }
@@ -335,7 +337,7 @@ export const UserRepository = {
           username: users.username,
           email: users.email,
           address: users.address,
-          proxy_wallet_address: users.proxy_wallet_address,
+          deposit_wallet_address: users.deposit_wallet_address,
           created_at: users.created_at,
           image: users.image,
           affiliate_code: users.affiliate_code,
@@ -377,7 +379,7 @@ export const UserRepository = {
           id: users.id,
           username: users.username,
           address: users.address,
-          proxy_wallet_address: users.proxy_wallet_address,
+          deposit_wallet_address: users.deposit_wallet_address,
           image: users.image,
           created_at: users.created_at,
         })
@@ -401,7 +403,7 @@ export const UserRepository = {
 
     return await runQuery(async () => {
       const addressClauses = normalizedAddresses.map(addr => eq(sql`LOWER(${users.address})`, addr))
-      const proxyClauses = normalizedAddresses.map(addr => eq(sql`LOWER(${users.proxy_wallet_address})`, addr))
+      const proxyClauses = normalizedAddresses.map(addr => eq(sql`LOWER(${users.deposit_wallet_address})`, addr))
       const whereConditions = [...addressClauses, ...proxyClauses].filter(Boolean)
       const whereClause = whereConditions.length > 1
         ? or(...whereConditions)
@@ -416,7 +418,7 @@ export const UserRepository = {
           id: users.id,
           username: users.username,
           address: users.address,
-          proxy_wallet_address: users.proxy_wallet_address,
+          deposit_wallet_address: users.deposit_wallet_address,
           image: users.image,
           created_at: users.created_at,
         })
@@ -434,49 +436,29 @@ function generateUsername(proxyAddress: string) {
   return `${proxyAddress}-${timestamp}`
 }
 
-async function ensureUserProxyWallet(user: any): Promise<string | null> {
-  const owner = typeof user?.address === 'string' ? user.address : ''
-  if (!owner || !owner.startsWith('0x')) {
+async function ensureUserDepositWallet(user: any): Promise<string | null> {
+  const hasProxyAddress = typeof user?.deposit_wallet_address === 'string' && user.deposit_wallet_address.startsWith('0x')
+  if (!hasProxyAddress) {
     return null
   }
 
-  const hasProxyAddress = typeof user?.proxy_wallet_address === 'string' && user.proxy_wallet_address.startsWith('0x')
-
   try {
-    const expectedProxyAddress = await getSafeProxyWalletAddress(owner as `0x${string}`)
-
-    if (!expectedProxyAddress) {
-      return null
-    }
-
-    const normalizedExpected = expectedProxyAddress.toLowerCase()
-    const normalizedCurrent = hasProxyAddress ? user.proxy_wallet_address.toLowerCase() : null
-    const addressChanged = !normalizedCurrent || normalizedCurrent !== normalizedExpected
-    const proxyAddress = addressChanged
-      ? expectedProxyAddress
-      : (user.proxy_wallet_address as `0x${string}`)
-
-    let nextStatus: ProxyWalletStatus = (user.proxy_wallet_status as ProxyWalletStatus | null) ?? 'not_started'
+    const proxyAddress = user.deposit_wallet_address as `0x${string}`
+    let nextStatus: DepositWalletStatus = (user.deposit_wallet_status as DepositWalletStatus | null) ?? 'not_started'
     const updates: Record<string, any> = {}
 
-    if (addressChanged) {
-      updates.proxy_wallet_address = proxyAddress
-    }
-
-    const shouldCheckDeployment = addressChanged
-      || !hasProxyAddress
-      || user.proxy_wallet_status !== 'deployed'
+    const shouldCheckDeployment = user.deposit_wallet_status !== 'deployed'
     if (shouldCheckDeployment) {
-      const deployed = await isProxyWalletDeployed(proxyAddress as `0x${string}`)
+      const deployed = await isDepositWalletDeployed(proxyAddress)
       if (deployed) {
         nextStatus = 'deployed'
       }
     }
 
-    if (nextStatus !== user.proxy_wallet_status) {
-      updates.proxy_wallet_status = nextStatus
+    if (nextStatus !== user.deposit_wallet_status) {
+      updates.deposit_wallet_status = nextStatus
       if (nextStatus === 'deployed') {
-        updates.proxy_wallet_tx_hash = null
+        updates.deposit_wallet_tx_hash = null
       }
     }
 
@@ -487,16 +469,16 @@ async function ensureUserProxyWallet(user: any): Promise<string | null> {
         .where(eq(users.id, user.id))
     }
 
-    user.proxy_wallet_address = proxyAddress
-    user.proxy_wallet_status = nextStatus
+    user.deposit_wallet_address = proxyAddress
+    user.deposit_wallet_status = nextStatus
     if (nextStatus === 'deployed') {
-      user.proxy_wallet_tx_hash = null
+      user.deposit_wallet_tx_hash = null
     }
 
     return proxyAddress
   }
   catch (error) {
-    console.error('Failed to ensure proxy wallet metadata', error)
+    console.error('Failed to ensure Deposit Wallet metadata', error)
   }
 
   return null

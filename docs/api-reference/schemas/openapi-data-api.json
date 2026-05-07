@@ -2372,6 +2372,32 @@
             "nullable": true
           }
         }
+      },
+      "UsernameAvailabilityResponse": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "available": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "username",
+          "available"
+        ]
+      },
+      "DataApiError": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
       }
     }
   }

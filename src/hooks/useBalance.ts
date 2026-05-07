@@ -13,7 +13,7 @@ interface Balance {
   symbol: string
 }
 
-export const SAFE_BALANCE_QUERY_KEY = 'safe-usdc-balance'
+export const DEPOSIT_WALLET_BALANCE_QUERY_KEY = 'deposit-wallet-usdc-balance'
 
 const USDC_DECIMALS = 6
 const ERC20_ABI = [
@@ -47,8 +47,8 @@ export function useBalance(options: UseBalanceOptions = {}) {
   }
   const client = clientRef.current
 
-  const proxyWalletAddress: Address | null = user?.proxy_wallet_address
-    ? normalizeAddress(user.proxy_wallet_address) as Address | null
+  const proxyWalletAddress: Address | null = user?.deposit_wallet_address
+    ? normalizeAddress(user.deposit_wallet_address) as Address | null
     : null
 
   const contract = useMemo(() => {
@@ -72,7 +72,7 @@ export function useBalance(options: UseBalanceOptions = {}) {
     isLoading,
     refetch,
   } = useQuery({
-    queryKey: [SAFE_BALANCE_QUERY_KEY, proxyWalletAddress],
+    queryKey: [DEPOSIT_WALLET_BALANCE_QUERY_KEY, proxyWalletAddress],
     enabled: isQueryEnabled,
     staleTime: 'static',
     gcTime: 5 * 60 * 1000,
